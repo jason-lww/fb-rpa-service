@@ -1,9 +1,9 @@
-aiokafka==0.12.0
 fastapi==0.116.1
-kafka-python
-openpyxl
-patchright==1.55.1
-pydantic==2.11.7
-PyYAML==6.0.2
-redis
 uvicorn==0.35.0
+patchright==1.55.1
+httpx==0.28.1
+pydantic==2.11.7
+pydantic-settings==2.5.2
+python-dotenv==1.1.1
+SQLAlchemy==2.0.42
+PyMySQL==1.1.1

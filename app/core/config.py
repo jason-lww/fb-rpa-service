@@ -1,41 +1,48 @@
-import os
-from pathlib import Path
+from functools import lru_cache
+from typing import Literal
 
-import yaml
-from pydantic import BaseModel, ConfigDict
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class Settings(BaseModel):
-    project_name: str = "ICS RPA Service"
-    debug: bool = False
-    log_dir: str = "log/"
+OtpServiceEnvironment = Literal["production", "test"]
 
-    kafka_bootstrap_servers: str = "localhost:9092"
-    group_id: str = "ics_rpa_group"
-    fb_account_flow_queue: str = "fb_account_flow_queue"
 
-    redis_host: str = "localhost"
-    redis_port: int = 6379
-    redis_db: int = 0
-    redis_password: str = ""
-    redis_enabled: bool = False
+class Settings(BaseSettings):
+    """运行配置，全部来自环境变量 / .env。"""
 
-    browser_headless: bool = False
-    fb_user_data_dir: str = ".browser/fb-profile"
+    project_name: str = "ics-rpa-service"
+    port: int = 8790
+
+    # 养号系统网关
+    incubation_gateway_key: str = ""
+    otp_service_environment: OtpServiceEnvironment = "production"
+
+    # PostgreSQL 留档（Phase2 使用）
+    database_url: str = ""
+
+    # 真实 Chrome 调试端点
+    cdp_endpoint: str = "http://127.0.0.1:9222"
+
+    # FB 自动登录（高风险：遇 2FA/安全验证会停下转人工）
+    fb_account: str = ""
+    fb_password: str = ""
+    fb_auto_login: bool = False
+
+    # 拟人化节奏
+    between_phone_delay_min_seconds: int = 10
+    between_phone_delay_max_seconds: int = 120
+    action_delay_ms: int = 300
+
+    # FB 目标页：新版入口是“已绑定帐户”(linked_profiles)，点开 WhatsApp 才进入绑定表单
+    fb_binding_url: str = "https://www.facebook.com/settings/?tab=linked_profiles"
     fb_default_timeout_ms: int = 15000
 
-    phone_pool_file: str = ""
-
-    model_config = ConfigDict(from_attributes=True)
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 
-env = os.getenv("APP_ENV", "local")
-BASE_DIR = Path(__file__).resolve().parents[1]
-config_path = BASE_DIR / "config" / f"config_{env}.yml"
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
 
-raw_config = {}
-if config_path.exists():
-    with config_path.open("r", encoding="utf-8") as f:
-        raw_config = yaml.safe_load(f) or {}
 
-settings = Settings(**raw_config)
+settings = get_settings()

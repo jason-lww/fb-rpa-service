@@ -1,62 +1,69 @@
-# ICS RPA Service
+# ics-rpa-service（FB WhatsApp 绑定自动化）
 
-基于 `daq-service` 的 FastAPI + Patchright 风格实现 FB 账号操作流程。
+Python 实现的 FB 账号操作 RPA 服务：用 **patchright + `connect_over_cdp`** 连接一个**已登录 FB 的真实 Chrome**，复用其会话执行 WhatsApp 号码绑定/解绑与商业主页创建，最大限度降低 FB 风控/封号风险；养号系统对接、OTP、留档与 admin 控台均由本服务承担。
 
-## 脚本 2：FB 账号操作流程
+> 本服务由原 Chrome 扩展项目 `FBChromeBind` 重构而来，已全量迁移到 Python，原 TypeScript 实现已移除。
 
-前提：
+## 为什么连真实 Chrome
 
-- Chrome 中已登录个人 FB 账号。
-- 执行绑定/移除前，确保当前身份可切换到目标公司主页。
-- 号码池 Excel 第一行需要包含手机号列，例如 `手机号`、`号码`、`phone`。
-- 状态列支持 `状态` / `status`，账套列支持 `账套` / `投放状态`。
+不拉起全新自动化浏览器，而是连到你手动启动、已登录 FB 的真实 Chrome 并复用其 `contexts[0]`（绝不 `new_context()`）。配合动作节奏、号码间随机间隔、FB 风控提示检测（限频/发码失败/非商业账号→暂停人工），把封控风险降到接近“真人操作”。
 
-启动：
+## 运行
 
 ```bash
+python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
-python -m patchright install chrome
-uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+patchright install chrome          # 首次需要
+
+cp .env.example .env               # 填入 INCUBATION_GATEWAY_KEY、DATABASE_URL 等
+
+# 启动一个已登录 FB 的真实 Chrome（务必用你平时登录的 profile）
+chrome --remote-debugging-port=9222 --user-data-dir=/path/to/your/profile
+
+uvicorn app.main:app --host 127.0.0.1 --port 8790 --reload
 ```
 
-绑定号码：
+## 接口
 
-```bash
-curl -X POST http://127.0.0.1:8000/rpa/fb/account-flow/bind-number \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "phone_pool_file": "/path/to/号池维护记录.xlsx",
-    "company_page_name": "公司主页名称"
-  }'
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/health` | 健康检查 + OTP 环境/CDP 端点/DB 状态 |
+| POST | `/rpa/fb/warpa-queue/start` | 从养号系统拉取待绑定实例并开始绑定队列 |
+| GET | `/rpa/fb/tasks/{task_id}` | 查询绑定任务状态、记录、日志 |
+| POST | `/rpa/fb/tasks/{task_id}/pause` | 暂停队列 |
+| POST | `/rpa/fb/business-page/create` | 创建业务主页（可指定名称或从名字池取） |
+| GET | `/rpa/fb/business-page/tasks/{task_id}` | 查询主页创建任务状态 |
+| GET | `/api/admin-state` `/api/merchants` `/api/page-names` `/api/personal-profiles` | 留档/管理数据读写 |
+| GET | `/admin-console` | 内置 admin 控台（HTML） |
+
+## 模块
+
+```text
+app/core/         配置(env) + 日志
+app/shared/       号码归一化、队列状态机、WaRPA 队列、国家码表、数据模型
+app/clients/      incubation 网关客户端(OTP/连接检测/待绑定/回写)
+app/services/     OTP 轮询(5s→15s×5)、绑定编排、主页创建编排
+app/automation/   patchright connect_over_cdp 会话 + FB 绑定/主页创建 DOM 流程
+app/db/           MySQL 会话(SQLAlchemy+PyMySQL) + 终态 schema
+app/repositories/ admin-state / merchants / page-names / personal-profiles 留档仓库
+app/web/          内置 admin 控台
+app/main.py       FastAPI 入口
 ```
 
-脚本会从最新 sheet 开始选择状态为空、且不是 `绑定前封号` 的号码。提交手机号后，通过接口写入 GEELARK 收到的 OTP：
+## 留档（MySQL）
 
-```bash
-curl -X POST http://127.0.0.1:8000/rpa/fb/account-flow/submit-otp \
-  -H 'Content-Type: application/json' \
-  -d '{"task_id": "<bind task id>", "otp_code": "123456"}'
-```
+设置 `DATABASE_URL=mysql+pymysql://user:pass@host:3306/db` 后，服务启动自动建表（幂等）。
+绑定队列每处理完一个号码会把批次/记录/操作日志写入 MySQL，并维护商户已绑定计数与最新风控状态。
+留空 `DATABASE_URL` 则禁用留档，仅保留内存任务态。
 
-绑定成功后，脚本会把 Excel 中该行 `账套` 更新为 `待投放`。
+## 注意
 
-移除投放完成号码：
+- FB 页面 DOM/文案/风控策略经常变化。绑定与主页创建流程优先使用 `aria-label`、`role`、可见文本、`autocomplete="tel"`、`inputmode="numeric"` 等较稳定特征，但**首次务必小批量在真实 FB 上验证并按需微调选择器**，尤其是主页创建向导（类目“女装店”、设置向导序列）。
+- 真实密钥不要提交，`.env.example` 仅占位。
+- 文档参考：`docs/`、`服务端接口/`、`PRD/`。
 
-```bash
-curl -X POST http://127.0.0.1:8000/rpa/fb/account-flow/remove-completed \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "phone_pool_file": "/path/to/号池维护记录.xlsx",
-    "company_page_name": "公司主页名称"
-  }'
-```
+## 进度
 
-脚本会扫描状态为 `投放完成` 的号码，进入 Linked accounts 列表移除，并把 Excel 状态更新为 `已移除`。
-
-查询任务状态：
-
-```bash
-curl http://127.0.0.1:8000/rpa/fb/account-flow/tasks/<task_id>
-```
-
-FB 页面经常调整文案和 DOM。如果页面无法自动切换公司主页，可以在打开的 Chrome 中手动确认公司主页身份后，让脚本继续执行。
+- [x] Phase 1：核心绑定链路（拉号 → 切主页 → 选 MX+52 → 填号 → 取码 → 确认 → 回写）+ 风控检测 + 拟人节奏
+- [x] Phase 2：MySQL 留档（admin-state/merchants/page-names/profiles）+ 管理接口
+- [x] Phase 3：业务主页创建自动化 + 内置 admin 控台；已删除被替代的 TS
